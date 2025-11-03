@@ -1,0 +1,770 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Multiplayer Battleship — Client</title>
+
+  <!-- Tailwind (cdn) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Socket.IO client (uses a stable CDN version) -->
+  <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+
+  <style>
+    /* Extra styling for board cells */
+    .board-cell {
+      width: 2.8rem;
+      height: 2.8rem;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-size:0.9rem;
+      user-select:none;
+    }
+    @media (max-width: 640px) {
+      .board-cell { width: 2.2rem; height:2.2rem; font-size:0.75rem; }
+    }
+
+    /* Neon-ish accents */
+    .neon {
+      box-shadow: 0 0 8px rgba(99,102,241,0.18), 0 0 22px rgba(99,102,241,0.08);
+    }
+
+    /* small spinner */
+    .spinner {
+      border: 3px solid rgba(255,255,255,0.08);
+      border-top: 3px solid rgba(99,102,241,1);
+      border-radius: 50%;
+      width: 20px;
+      height: 20px;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen antialiased">
+
+  <div id="app" class="max-w-6xl mx-auto p-4">
+    <header class="flex items-center justify-between mb-4">
+      <h1 class="text-2xl font-bold tracking-tight">⚓ Battleship — Multiplayer</h1>
+      <div class="flex items-center gap-3">
+        <div id="connection-indicator" class="flex items-center gap-2 text-sm text-slate-300">
+          <div id="conn-dot" class="w-3 h-3 rounded-full bg-yellow-400"></div>
+          <span id="conn-text">Connecting...</span>
+        </div>
+        <div id="server-message-area"></div>
+      </div>
+    </header>
+
+    <!-- MAIN LAYOUT -->
+    <main class="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <!-- Left: Controls & Status -->
+      <section class="md:col-span-1 space-y-4">
+        <!-- Lobby -->
+        <div id="lobby-panel" class="bg-slate-800 p-4 rounded-lg neon">
+          <h2 class="font-semibold text-lg mb-2">Lobby / Connection</h2>
+          <label class="block text-sm mb-1">Your name</label>
+          <input id="player-name" type="text" placeholder="Player123" class="w-full p-2 rounded bg-slate-900 text-slate-100 outline-none" />
+
+          <div class="flex gap-2 mt-3">
+            <button id="create-game-btn" class="flex-1 py-2 rounded bg-violet-600 hover:bg-violet-700">Create Game</button>
+            <button id="join-game-toggle" class="py-2 px-3 rounded border border-slate-700">Join</button>
+          </div>
+
+          <div id="join-area" class="mt-3 hidden">
+            <label class="block text-sm mb-1">Room ID</label>
+            <input id="join-room-id" type="text" placeholder="room-abc123" class="w-full p-2 rounded bg-slate-900 text-slate-100 outline-none"/>
+            <button id="join-game-btn" class="w-full mt-2 py-2 rounded bg-emerald-600 hover:bg-emerald-700">Join Game</button>
+          </div>
+
+          <div id="room-info" class="mt-3 text-sm text-slate-300 hidden">
+            <div><span class="font-medium">Room:</span> <span id="room-id-text"></span></div>
+            <div><span class="font-medium">Opponent:</span> <span id="opponent-name-text">—</span></div>
+          </div>
+        </div>
+
+        <!-- Placement Controls -->
+        <div id="placement-panel" class="bg-slate-800 p-4 rounded-lg neon hidden">
+          <h2 class="font-semibold text-lg mb-2">Ship Placement</h2>
+          <div class="flex items-center gap-2">
+            <div>
+              <button id="toggle-orientation" class="py-2 px-3 rounded bg-slate-700">Orientation: <span id="orientation-label">H</span></button>
+            </div>
+            <div>
+              <button id="submit-placements" class="py-2 px-3 rounded bg-emerald-600 hover:bg-emerald-700">Submit Placements</button>
+            </div>
+          </div>
+
+          <div class="mt-3">
+            <div class="text-sm text-slate-300">Ships remaining to place:</div>
+            <ul id="ships-remaining" class="mt-2 space-y-1 text-sm"></ul>
+            <div class="mt-2 text-xs text-slate-400">Click a cell on your grid to place the current ship. Overlaps and out-of-bounds placements are blocked.</div>
+          </div>
+        </div>
+
+        <!-- Status / Controls during game -->
+        <div id="status-panel" class="bg-slate-800 p-4 rounded-lg neon hidden">
+          <h2 class="font-semibold text-lg mb-2">Game Status</h2>
+          <div class="text-sm text-slate-300 mb-2" id="status-message">Waiting for players...</div>
+          <div class="text-sm text-slate-300"><span class="font-medium">Turn:</span> <span id="turn-indicator">—</span></div>
+          <div class="text-sm text-slate-300"><span class="font-medium">Opponent:</span> <span id="status-opponent">—</span></div>
+          <div class="mt-2 text-sm text-slate-300">
+            <div><span class="font-medium">My ships health:</span></div>
+            <ul id="my-ships-health" class="mt-1 text-sm"></ul>
+          </div>
+        </div>
+
+        <!-- Messages / Notifications -->
+        <div class="bg-slate-800 p-4 rounded-lg neon">
+          <h2 class="font-semibold text-lg mb-2">Messages</h2>
+          <div id="messages-list" class="text-sm text-slate-300 space-y-2 max-h-40 overflow-auto"></div>
+        </div>
+      </section>
+
+      <!-- Middle & Right: Boards -->
+      <section class="md:col-span-2 space-y-4">
+        <div id="connection-overlay" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div class="bg-slate-800 p-6 rounded-lg flex items-center gap-4">
+            <div class="spinner"></div>
+            <div>Waiting for server...</div>
+          </div>
+        </div>
+
+        <!-- Ship placement board + opponent board views -->
+        <div id="boards-container" class="bg-slate-800 p-4 rounded-lg neon">
+          <!-- Lobby hint -->
+          <div id="lobby-hint" class="text-slate-300">
+            Connect to a server and create/join a room to begin.
+          </div>
+
+          <!-- Placing ships interactive board -->
+          <div id="placement-view" class="hidden">
+            <h3 class="font-semibold">Place your ships (10×10)</h3>
+            <div class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div>
+                <div class="flex items-center gap-2 mb-2">
+                  <div class="text-sm text-slate-300">Your Board</div>
+                </div>
+                <div id="my-placement-board" class="grid grid-cols-[auto,repeat(10,1fr)] gap-0"></div>
+              </div>
+
+              <div>
+                <div class="text-sm text-slate-300 mb-2">How to place</div>
+                <div class="text-sm text-slate-300 space-y-2">
+                  <p>Choose orientation and click a cell to place the current ship (highlighted). Ships: 5, 4, 3, 3, 2.</p>
+                  <p>Use <span class="font-medium">Submit Placements</span> to send the placements to the server.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- In progress / finished view -->
+          <div id="game-view" class="hidden">
+            <div class="flex flex-col md:flex-row gap-4">
+              <div class="flex-1">
+                <div class="flex items-center justify-between mb-2">
+                  <h3 class="font-semibold">My Board</h3>
+                  <div class="text-sm text-slate-300">Labels: A–J, 1–10</div>
+                </div>
+                <div id="my-board" class="bg-slate-900 p-3 rounded"></div>
+              </div>
+
+              <div class="flex-1">
+                <div class="flex items-center justify-between mb-2">
+                  <h3 class="font-semibold">Opponent's Board</h3>
+                  <div class="text-sm text-slate-300">Click water cells to shoot</div>
+                </div>
+                <div id="opponent-board" class="bg-slate-900 p-3 rounded"></div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+    </main>
+
+    <footer class="mt-6 text-center text-xs text-slate-500">
+      Built to work with Flask-SocketIO backend at <code>http://127.0.0.1:5000</code>
+    </footer>
+  </div>
+
+<script>
+/*
+  Battleship Client (single-file)
+
+  - Connects to http://127.0.0.1:5000 (Socket.IO)
+  - Handles the three UI states:
+     * Lobby / Connection
+     * Ship placement (placing_ships)
+     * In progress / finished
+  - Emits: create_game, join_game, place_ships, make_shot
+  - Listens: game_update, server_message
+*/
+
+/* -------------------------
+   CONFIG
+   ------------------------- */
+const SERVER_URL = "http://127.0.0.1:5000"; // change if needed
+const COLS = 10, ROWS = 10;
+const COL_LABELS = "ABCDEFGHIJ".split('');
+const SHIP_SIZES = [5,4,3,3,2]; // order used for placement
+
+/* -------------------------
+   APPLICATION STATE
+   ------------------------- */
+let socket = null;
+let connected = false;
+let currentGame = null; // object received from server via game_update
+let myName = "";
+let myRoomId = null;
+
+// Placement UI state
+let placementOrientation = 'H';
+let currentShipIndex = 0; // which ship in SHIP_SIZES to place next
+let tentativePlacements = []; // array of {size, start_r, start_c, orientation}
+let placedCoordinatesMask = Array.from({length: ROWS}, ()=>Array(COLS).fill(false));
+
+/* -------------------------
+   DOM HELPERS
+   ------------------------- */
+const $ = id => document.getElementById(id);
+
+function show(el){ el.classList.remove('hidden'); }
+function hide(el){ el.classList.add('hidden'); }
+function setText(id, txt){ const e=$(id); if(e) e.textContent = txt; }
+
+function connectSocket(){
+  // create socket
+  socket = io(SERVER_URL, { transports: ["websocket","polling"] });
+
+  setConnectionIndicator('connecting');
+
+  socket.on('connect', () => {
+    connected = true;
+    setConnectionIndicator('connected');
+    addMessage('Connected to server', 'info');
+  });
+
+  socket.on('disconnect', (reason) => {
+    connected = false;
+    setConnectionIndicator('disconnected');
+    addMessage('Disconnected from server: ' + reason, 'error');
+    // keep UI intact and let server reconnection be attempted by socket.io
+  });
+
+  socket.on('connect_error', (err) => {
+    setConnectionIndicator('error');
+    addMessage('Connection error', 'error');
+  });
+
+  socket.on('server_message', (payload) => {
+    // payload: { text, type }
+    const t = payload?.type || 'info';
+    addMessage(payload?.text || JSON.stringify(payload), t);
+  });
+
+  socket.on('game_update', (data) => {
+    // The server sends the authoritative current game state
+    currentGame = data;
+    renderFromGameUpdate();
+  });
+}
+
+/* -------------------------
+   UI: Connection Indicator + Messages
+   ------------------------- */
+function setConnectionIndicator(status){
+  const dot = $('conn-dot');
+  const text = $('conn-text');
+  if(status==='connecting'){
+    dot.className = 'w-3 h-3 rounded-full bg-yellow-400';
+    text.textContent = 'Connecting...';
+  } else if(status==='connected'){
+    dot.className = 'w-3 h-3 rounded-full bg-emerald-500';
+    text.textContent = 'Connected';
+  } else if(status==='disconnected'){
+    dot.className = 'w-3 h-3 rounded-full bg-rose-500';
+    text.textContent = 'Disconnected';
+  } else {
+    dot.className = 'w-3 h-3 rounded-full bg-yellow-400';
+    text.textContent = 'Connecting...';
+  }
+}
+
+function addMessage(text, type='info'){
+  const list = $('messages-list');
+  const div = document.createElement('div');
+  let cls = 'text-sm p-2 rounded ';
+  if(type==='success') cls += 'bg-emerald-700/40';
+  else if(type==='error' || type==='critical') cls += 'bg-rose-700/30';
+  else cls += 'bg-slate-700/20';
+  div.className = cls;
+  div.textContent = text;
+  list.prepend(div);
+  // keep last 50
+  while(list.children.length > 50) list.removeChild(list.lastChild);
+}
+
+/* -------------------------
+   LOBBY ACTIONS
+   ------------------------- */
+$('join-game-toggle').addEventListener('click', () => {
+  const area = $('join-area');
+  if(area.classList.contains('hidden')) show(area); else hide(area);
+});
+
+$('create-game-btn').addEventListener('click', () => {
+  const name = $('player-name').value.trim();
+  if(!name) { addMessage('Enter a player name.', 'error'); return; }
+  myName = name;
+  if(!socket) connectSocket();
+  socket.emit('create_game', { player_name: name }, (ack) => {
+    // optional ack handling if server sends ack; otherwise server will emit game_update
+    if(ack && ack.room_id) {
+      myRoomId = ack.room_id;
+      updateRoomInfo(ack.room_id, ack.opponent_name || '—');
+      addMessage('Game created. Room ID: ' + ack.room_id, 'success');
+    }
+  });
+});
+
+$('join-game-btn').addEventListener('click', () => {
+  const name = $('player-name').value.trim();
+  const room = $('join-room-id').value.trim();
+  if(!name || !room) { addMessage('Enter name and room ID.', 'error'); return; }
+  myName = name;
+  if(!socket) connectSocket();
+  socket.emit('join_game', { room_id: room, player_name: name }, (ack) => {
+    if(ack && ack.success) {
+      myRoomId = room;
+      updateRoomInfo(room, ack.opponent_name || '—');
+      addMessage('Joined room ' + room, 'success');
+    } else {
+      addMessage((ack && ack.message) || 'Failed to join room', 'error');
+    }
+  });
+});
+
+function updateRoomInfo(roomId, opponentName){
+  $('room-id-text').textContent = roomId;
+  $('opponent-name-text').textContent = opponentName || '—';
+  show($('room-info'));
+}
+
+/* -------------------------
+   RENDERING: game_update -> full UI
+   ------------------------- */
+function renderFromGameUpdate(){
+  // data format is server-defined. We'll use fields mentioned in spec:
+  // status, my_board, opponent_board, is_my_turn, status_message, opponent_name, my_ships_health, my_ships_placed
+  const data = currentGame || {};
+  // update room info if provided
+  if(data.room_id) {
+    updateRoomInfo(data.room_id, data.opponent_name || '—');
+  }
+
+  // Show/hide panels depending on status
+  const status = data.status || 'lobby';
+
+  // update status panel content
+  setText('status-message', data.status_message || 'Waiting...');
+  setText('status-opponent', data.opponent_name || '—');
+  setText('turn-indicator', data.is_my_turn ? 'Your turn' : 'Opponent turn');
+
+  // my ships health
+  const healthList = $('my-ships-health');
+  healthList.innerHTML = '';
+  const arr = data.my_ships_health || [];
+  if(arr.length){
+    arr.forEach((h,i)=> {
+      const li = document.createElement('li');
+      li.textContent = `Ship ${i+1}: ${h} HP`;
+      healthList.appendChild(li);
+    });
+  } else {
+    const li = document.createElement('li');
+    li.textContent = 'No ship health data';
+    healthList.appendChild(li);
+  }
+
+  // server provided my_ships_placed
+  const placingMode = status === 'placing_ships' && !data.my_ships_placed;
+  if(placingMode){
+    // Show placement UI
+    show($('placement-panel'));
+    show($('placement-view'));
+    hide($('game-view'));
+    hide($('lobby-hint'));
+    show($('status-panel'));
+    hide($('lobby-panel'));
+    // Keep track from server: if server sends previous placements, prefill (not implemented here)
+    renderPlacementBoard();
+    renderShipsRemaining();
+  } else if(status === 'in_progress' || status === 'finished'){
+    // Show game boards
+    hide($('placement-panel'));
+    hide($('placement-view'));
+    show($('game-view'));
+    hide($('lobby-hint'));
+    show($('status-panel'));
+    hide($('lobby-panel'));
+    renderBoards(data);
+  } else {
+    // Lobby
+    hide($('placement-panel'));
+    hide($('placement-view'));
+    hide($('game-view'));
+    show($('lobby-hint'));
+    show($('lobby-panel'));
+    hide($('status-panel'));
+  }
+}
+
+/* -------------------------
+   BOARDS RENDERING
+   ------------------------- */
+function renderBoards(data){
+  const myBoard = data.my_board || createEmptyBoard();
+  const oppBoard = data.opponent_board || createEmptyBoard();
+
+  // detect sunk ship coords for both boards
+  const mySunk = detectSunkCoords(myBoard);
+  const oppSunk = detectSunkCoords(oppBoard);
+
+  renderBoardDOM('my-board', myBoard, { readOnly: true, sunkCoords: mySunk });
+  renderBoardDOM('opponent-board', oppBoard, { readOnly: false, sunkCoords: oppSunk, clickable: data.is_my_turn });
+}
+
+/* create a ROWSxCOLS board filled with 0 */
+function createEmptyBoard(){
+  return Array.from({length: ROWS}, ()=>Array.from({length: COLS}, ()=>0));
+}
+
+/* Renders a board into given container id.
+   Options:
+     readOnly: don't allow clicks for shooting
+     clickable: when true, water cells (0) are clickable if allowed
+     sunkCoords: Set of "r,c" strings to mark sunk */
+function renderBoardDOM(containerId, board, options = {}){
+  const container = $(containerId);
+  container.innerHTML = '';
+
+  // labels row
+  const grid = document.createElement('div');
+  grid.className = 'grid gap-0';
+  // We'll create a table-like layout: left column labels (rows), and a top row of column labels
+  // Use CSS grid with columns: auto + repeat(10, minmax(0,1fr))
+  const wrapper = document.createElement('div');
+  wrapper.className = 'grid';
+  wrapper.style.gridTemplateColumns = `min-content repeat(${COLS}, minmax(0,1fr))`;
+
+  // Top-left blank
+  const blank = document.createElement('div');
+  blank.className = 'p-1 text-xs text-slate-400';
+  wrapper.appendChild(blank);
+
+  // Column labels
+  for(let c=0;c<COLS;c++){
+    const colLbl = document.createElement('div');
+    colLbl.className = 'p-1 text-center text-xs text-slate-300';
+    colLbl.textContent = COL_LABELS[c];
+    wrapper.appendChild(colLbl);
+  }
+
+  // Rows
+  for(let r=0;r<ROWS;r++){
+    // Row number label
+    const rowLabel = document.createElement('div');
+    rowLabel.className = 'p-1 text-xs text-slate-300 text-right';
+    rowLabel.textContent = (r+1);
+    wrapper.appendChild(rowLabel);
+
+    for(let c=0;c<COLS;c++){
+      const val = board[r][c];
+      const cell = document.createElement('div');
+      cell.className = 'board-cell border border-slate-800/60';
+      cell.style.minWidth = '2.8rem';
+      cell.style.minHeight = '2.8rem';
+      // style based on value:
+      // Interpretations: 0 water, >0 ship id, 2 hit, 3 miss
+      // We'll render priority: sunk -> hit -> ship -> miss -> water
+      const key = `${r},${c}`;
+      let inner = '';
+      let bg = 'bg-slate-800';
+      let color = 'text-slate-300';
+      let cursor = 'default';
+
+      if(options.sunkCoords && options.sunkCoords.has(key)){
+        bg = 'bg-rose-800';
+        color = 'text-white';
+      } else if(val === 2){ // hit
+        bg = 'bg-rose-600';
+        color = 'text-white';
+      } else if(val === 3){ // miss
+        bg = 'bg-slate-700';
+        color = 'text-slate-400';
+        inner = '•';
+      } else if(val > 0 && options.readOnly){ // show ship cells on own board
+        bg = 'bg-slate-600';
+        color = 'text-white';
+      } else {
+        bg = 'bg-slate-900';
+        color = 'text-slate-400';
+      }
+
+      cell.className += ` ${bg} ${color} flex items-center justify-center`;
+      cell.dataset.r = r;
+      cell.dataset.c = c;
+
+      // clickable on opponent board if water (0) and options.clickable true
+      if(!options.readOnly && options.clickable && val === 0){
+        cell.classList.add('hover:bg-slate-700', 'cursor-pointer');
+        cursor = 'pointer';
+        cell.addEventListener('click', () => {
+          // Only allow click when server says it's my turn (checked in renderFromGameUpdate)
+          if(!currentGame || !currentGame.is_my_turn){
+            addMessage('Not your turn', 'info');
+            return;
+          }
+          // emit make_shot
+          socket && socket.emit('make_shot', { r: r, c: c });
+        });
+      }
+
+      // show small marker for hit/miss
+      if(val === 2) inner = '✕';
+      if(val === 3) inner = '•';
+
+      cell.textContent = inner;
+      wrapper.appendChild(cell);
+    }
+  }
+
+  container.appendChild(wrapper);
+}
+
+/* Given a board with ship markers (>0) and hits (=2),
+   detect coordinates that belong to ships fully sunk (all ship cells are hit).
+   Return a Set of "r,c" strings.
+*/
+function detectSunkCoords(board){
+  const nR = ROWS, nC = COLS;
+  const visited = Array.from({length:nR}, ()=>Array(nC).fill(false));
+  const sunkSet = new Set();
+
+  for(let r=0;r<nR;r++){
+    for(let c=0;c<nC;c++){
+      if(visited[r][c]) continue;
+      const v = board[r][c];
+      if(v > 0){
+        // BFS/DFS to get contiguous ship cells (4-neighbor)
+        const stack = [[r,c]];
+        const coords = [];
+        visited[r][c] = true;
+        while(stack.length){
+          const [cr,cc] = stack.pop();
+          coords.push([cr,cc]);
+          [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dr,dc])=>{
+            const nr = cr+dr, nc = cc+dc;
+            if(nr>=0 && nr<nR && nc>=0 && nc<nC && !visited[nr][nc] && board[nr][nc] > 0){
+              visited[nr][nc] = true;
+              stack.push([nr,nc]);
+            }
+          });
+        }
+        // check if all cells in coords have been hit (value==2)
+        const allHit = coords.every(([ar,ac]) => board[ar][ac] === 2);
+        if(allHit){
+          coords.forEach(([ar,ac]) => sunkSet.add(`${ar},${ac}`));
+        }
+      } else {
+        visited[r][c] = true;
+      }
+    }
+  }
+  return sunkSet;
+}
+
+/* -------------------------
+   SHIP PLACEMENT UI
+   ------------------------- */
+function renderPlacementBoard(){
+  const container = $('my-placement-board');
+  container.innerHTML = '';
+  // top row: blank + labels
+  const topRow = document.createElement('div'); topRow.className = 'col-span-11';
+  // we will build a custom grid like before:
+  const wrapper = document.createElement('div');
+  wrapper.className = 'grid';
+  wrapper.style.gridTemplateColumns = `min-content repeat(${COLS}, minmax(0,1fr))`;
+  wrapper.style.gap = '0';
+
+  const blank = document.createElement('div'); blank.className='p-1'; wrapper.appendChild(blank);
+  for(let c=0;c<COLS;c++){
+    const lbl = document.createElement('div'); lbl.className='p-1 text-xs text-slate-300 text-center'; lbl.textContent = COL_LABELS[c]; wrapper.appendChild(lbl);
+  }
+
+  for(let r=0;r<ROWS;r++){
+    const rowLbl = document.createElement('div'); rowLbl.className='p-1 text-xs text-slate-300 text-right'; rowLbl.textContent = (r+1); wrapper.appendChild(rowLbl);
+    for(let c=0;c<COLS;c++){
+      const cell = document.createElement('div');
+      cell.className = 'board-cell border border-slate-800/60 bg-slate-900 text-slate-400';
+      cell.dataset.r = r; cell.dataset.c = c;
+      cell.addEventListener('click', () => {
+        placeCurrentShipAt(r, c);
+      });
+      wrapper.appendChild(cell);
+    }
+  }
+
+  container.appendChild(wrapper);
+
+  // highlight tentative placements
+  updatePlacementHighlights();
+}
+
+function renderShipsRemaining(){
+  const ul = $('ships-remaining');
+  ul.innerHTML = '';
+  for(let i=currentShipIndex;i<SHIP_SIZES.length;i++){
+    const li = document.createElement('li');
+    li.textContent = `Size ${SHIP_SIZES[i]}`;
+    li.className = 'text-sm text-slate-200';
+    ul.appendChild(li);
+  }
+  if(currentShipIndex >= SHIP_SIZES.length){
+    const done = document.createElement('div');
+    done.textContent = 'All ships placed. Press Submit.';
+    done.className = 'text-sm text-emerald-200';
+    ul.appendChild(done);
+  }
+}
+
+function placeCurrentShipAt(r, c){
+  if(currentShipIndex >= SHIP_SIZES.length){
+    addMessage('All ships already placed', 'info');
+    return;
+  }
+  const size = SHIP_SIZES[currentShipIndex];
+  // check bounds
+  const coords = [];
+  const orient = placementOrientation;
+  for(let i=0;i<size;i++){
+    const rr = r + (orient==='V' ? i : 0);
+    const cc = c + (orient==='H' ? i : 0);
+    if(rr < 0 || rr >= ROWS || cc < 0 || cc >= COLS){
+      addMessage('Placement out-of-bounds', 'error'); return;
+    }
+    coords.push([rr,cc]);
+  }
+  // check overlap with existing tentative placements
+  for(const [rr,cc] of coords){
+    if(placedCoordinatesMask[rr][cc]){
+      addMessage('Overlap with previously placed ship', 'error'); return;
+    }
+  }
+  // Accept placement
+  tentativePlacements.push({ size, start_r: r, start_c: c, orientation: orient });
+  // mark placedCoordinatesMask
+  coords.forEach(([rr,cc]) => placedCoordinatesMask[rr][cc] = true);
+  currentShipIndex++;
+  renderShipsRemaining();
+  addMessage(`Placed ship size ${size} at ${COL_LABELS[c]}${r+1} (${orient})`, 'success');
+  updatePlacementHighlights();
+}
+
+function updatePlacementHighlights(){
+  const container = $('my-placement-board');
+  if(!container) return;
+  // compute set of all placed coords
+  const placed = new Set();
+  for(const p of tentativePlacements){
+    const s = p.size, r=p.start_r, c=p.start_c, o=p.orientation;
+    for(let i=0;i<s;i++){
+      const rr = r + (o==='V' ? i : 0);
+      const cc = c + (o==='H' ? i : 0);
+      placed.add(`${rr},${cc}`);
+    }
+  }
+  // highlight
+  container.querySelectorAll('.board-cell').forEach(cell => {
+    const r = cell.dataset.r, c = cell.dataset.c;
+    if(!r) return;
+    const key = `${r},${c}`;
+    if(placed.has(key)){
+      cell.classList.remove('bg-slate-900', 'text-slate-400');
+      cell.classList.add('bg-emerald-700','text-white');
+    } else {
+      cell.classList.remove('bg-emerald-700','text-white');
+      cell.classList.add('bg-slate-900','text-slate-400');
+    }
+  });
+}
+
+/* Orientation toggle */
+$('toggle-orientation').addEventListener('click', () => {
+  placementOrientation = placementOrientation === 'H' ? 'V' : 'H';
+  $('orientation-label').textContent = placementOrientation;
+});
+
+/* Submit placements: emit place_ships event with array of 5 placement objects */
+$('submit-placements').addEventListener('click', () => {
+  if(!socket) { addMessage('Not connected to server', 'error'); return; }
+  if(tentativePlacements.length !== SHIP_SIZES.length){
+    addMessage('You must place all ships before submitting', 'error'); return;
+  }
+  // Validate again: no overlaps
+  // send
+  socket.emit('place_ships', tentativePlacements);
+  addMessage('Submitted ship placements', 'info');
+  // Keep UI waiting for server confirmation via game_update
+});
+
+/* -------------------------
+   INITIALIZATION
+   ------------------------- */
+function init(){
+  // connect but allow lazy connect on action (optional)
+  connectSocket();
+
+  // create initial boards skeleton (empty)
+  // renderFromGameUpdate() will be called when server sends game_update
+
+  // initialize labels
+  $('orientation-label').textContent = placementOrientation;
+
+  // hide panels as initial state
+  hide($('placement-panel'));
+  hide($('placement-view'));
+  hide($('game-view'));
+  hide($('status-panel'));
+}
+
+// Kick off
+init();
+
+/* -------------------------
+   Utility: Reset placement state (if server asks to re-place)
+   ------------------------- */
+function resetPlacementState(){
+  currentShipIndex = 0;
+  tentativePlacements = [];
+  placedCoordinatesMask = Array.from({length: ROWS}, ()=>Array(COLS).fill(false));
+  renderPlacementBoard();
+  renderShipsRemaining();
+}
+
+/* Watch for server instruction to reset placement (if server sends such flag) */
+(function watchGameUpdateForPlacementReset(){
+  // since game_update handler calls renderFromGameUpdate we can detect scenario that server wants re-placement
+  // For example: if currentGame has 'reset_placements' boolean true
+  const orig = socket?.on;
+})();
+
+/* -------------------------
+   END OF FILE
+   ------------------------- */
+</script>
+</body>
+</html>
