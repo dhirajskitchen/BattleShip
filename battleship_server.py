@@ -91,7 +91,5 @@ def handle_make_shot(data):
 
 
 if __name__ == '__main__':
-    # SSL context for WSS support
-    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ssl_context.load_cert_chain(certfile='cert.pem', keyfile='key.pem')
-    socketio.run(app, host='0.0.0.0', port=5005, debug=True, use_reloader=False, ssl_context=ssl_context)
+    socketio.run(app, host='0.0.0.0', port=5005, debug=True, use_reloader=False)
+
