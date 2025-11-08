@@ -1,6 +1,7 @@
 from flask import Flask
 from flask_socketio import SocketIO, emit
 import random, threading, time
+import ssl
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
@@ -90,5 +91,7 @@ def handle_make_shot(data):
 
 
 if __name__ == '__main__':
-    # Change port if needed (e.g., 5050)
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True, use_reloader=False)
+    # SSL context for WSS support
+    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ssl_context.load_cert_chain(certfile='cert.pem', keyfile='key.pem')
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True, use_reloader=False, ssl_context=ssl_context)
